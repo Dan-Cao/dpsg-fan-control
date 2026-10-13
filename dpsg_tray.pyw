@@ -1,13 +1,13 @@
-"""System tray monitor/controller for the Thermaltake DPS G PSU (see dpsg_fan.py).
+"""System tray monitor for the Thermaltake DPS G PSU (see dpsg_fan.py).
 
-The icon shows the PSU temperature; its colour shows the fan state:
-  grey = fan off, blue = fan on (Silent), orange = Performance, red = PSU not found.
-Hover for a summary, right-click for details, fan mode and options.
+The icon shows the PSU temperature; its colour shows the fan:
+  grey = fan off, blue = fan on, red = PSU not found.
+Hover for a summary, right-click for details. It only sends a command to the PSU when
+you pick a fan mode from the menu: one command per click, never automatically.
 
   pip install hidapi pystray pillow
-  pythonw dpsg_tray.pyw [--on 40] [--off 36] [--min-on 60]
+  pythonw dpsg_tray.pyw
 """
-import argparse
 import ctypes
 import os
 import sys
@@ -18,15 +18,15 @@ import winreg
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
-from dpsg_fan import KEEPALIVE_S, PSU, STALL_S, Hysteresis
+from dpsg_fan import PSU
 
 APP = "DPSG Fan"
 LOG_DIR = os.path.join(os.environ["LOCALAPPDATA"], "DPSG-Fan")
 LOG_FILE = os.path.join(LOG_DIR, "dpsg_fan.log")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-COLORS = {"off": (70, 70, 70), "silent": (40, 120, 215), "performance": (225, 120, 30),
-          "error": (200, 40, 40)}
-MODE_NAMES = {"auto": "Auto", "zero": "Zero Fan", "silent": "Silent", "performance": "Performance"}
+INTERVAL_S = 2
+COLORS = {"off": (70, 70, 70), "on": (40, 120, 215), "error": (200, 40, 40)}
+MODE_NAMES = {"zero": "Zero Fan", "silent": "Silent", "performance": "Performance"}
 
 
 def log(msg):
@@ -51,15 +51,12 @@ def make_icon(text, color):
 
 
 class TrayApp:
-    def __init__(self, args):
-        self.interval = args.interval
-        self.ctl = Hysteresis(args.on, args.off, args.min_on)
-        self.choice = "auto"  # auto | zero | silent | performance
-        self.applied = None  # PSU's fan mode as last read back (report 0x14)
-        self.sent_at = 0.0  # last time a fan-mode command was sent
-        self.data, self.error = None, None
-        self.last_switch = None, None  # (message, monotonic time)
+    def __init__(self):
         self.psu = None
+        self.data = self.mode = self.error = None
+        self.fan_on = None
+        self.fan_since = time.monotonic()  # when the fan last started or stopped
+        self.fan_stops = 0  # stops seen outside Zero Fan, where the fan should run steadily
         self.stop = threading.Event()
         self.icon = pystray.Icon(APP, make_icon("..", COLORS["off"]), APP, self.build_menu())
 
@@ -68,115 +65,87 @@ class TrayApp:
         while not self.stop.is_set():
             try:
                 if self.psu is None:
-                    self.psu, self.applied = PSU(), None
-                d = self.psu.read()
+                    self.psu = PSU()
+                d, mode = self.psu.read(), self.psu.get_mode()
                 self.data, self.error = d, None
-                if self.choice == "auto":
-                    msg = self.ctl.step(d)
-                    if msg:
-                        log(msg)
-                        self.last_switch = msg.split(" temp")[0].replace("  ", " "), time.monotonic()
-                    want = self.ctl.mode
-                else:
-                    want = self.choice
-                actual = self.psu.get_mode()
-                if actual != want:
-                    if self.applied == want:  # it was right last poll, so something else changed it
-                        log(f"PSU mode changed to {actual} by something else, setting {want}")
-                    self.psu.set_mode(want)
-                    self.sent_at = time.monotonic()
-                    actual = self.psu.get_mode()
-                elif want != "zero":
-                    since_sent = time.monotonic() - self.sent_at
-                    # the fan normally spins up within ~8 s of a command
-                    stalled = d["rpm"] == 0 and since_sent > STALL_S
-                    if stalled:
-                        log(f"fan still stopped {since_sent:.0f}s after setting {want}, re-sending")
-                    if stalled or since_sent > KEEPALIVE_S:
-                        self.psu.set_mode(want)  # keep-alive, see KEEPALIVE_S
-                        self.sent_at = time.monotonic()
-                self.applied = actual
+                self.track(d, mode)
             except Exception as e:  # PSU unplugged, asleep, etc.
                 if self.error is None:
                     log(f"error: {e}")
                 self.error, self.psu = str(e), None
             self.refresh()
-            self.stop.wait(self.interval)
+            self.stop.wait(INTERVAL_S)
 
-    def state(self):
-        if self.error or not self.data:
-            return "error"
-        if self.applied == "performance":
-            return "performance"
-        return "silent" if self.data["rpm"] > 0 else "off"
+    def track(self, d, mode):
+        """Log mode changes, and fan stops/starts outside Zero Fan (where it cycles by design)."""
+        if mode != self.mode:
+            log(f"fan mode {self.name(mode)}" if self.mode is None
+                else f"fan mode changed: {self.name(self.mode)} -> {self.name(mode)}")
+            self.mode = mode
+        fan_on = d["rpm"] > 0
+        if fan_on == self.fan_on:
+            return
+        if self.fan_on is not None and mode != "zero":
+            if not fan_on:
+                self.fan_stops += 1
+            log(f"fan {'started' if fan_on else 'stopped'} in {self.name(mode)} after "
+                f"{ago(self.fan_since)} (temp={d['temp']:.0f}C out={d['pout']:.0f}W)")
+        self.fan_on, self.fan_since = fan_on, time.monotonic()
+
+    @staticmethod
+    def name(mode):
+        return MODE_NAMES.get(mode, mode)
 
     def refresh(self):
-        d, st = self.data, self.state()
-        if st == "error":
+        d = self.data
+        if self.error or not d:
             self.icon.icon = make_icon("!", COLORS["error"])
             self.icon.title = f"{APP}: PSU not found"
         else:
-            self.icon.icon = make_icon(f"{d['temp']:.0f}", COLORS[st])
+            self.icon.icon = make_icon(f"{d['temp']:.0f}", COLORS["on" if d["rpm"] > 0 else "off"])
             fan = f"fan {d['rpm']:.0f} RPM" if d["rpm"] > 0 else "fan off"
             self.icon.title = (f"PSU {d['temp']:.0f}°C, {fan}\n"
                                f"{d['pout']:.0f} W out, {d['eff'] * 100:.1f}% eff\n"
-                               f"{self.mode_label()}")
+                               f"Fan mode: {self.name(self.mode)}")
         self.icon.update_menu()
-
-    def auto_status(self):
-        c = self.ctl
-        if c.mode == "zero":
-            return f"fan should be off, on at {c.on:.0f}°C"
-        left = c.min_on - (time.monotonic() - c.since)
-        if left > 0:
-            return f"fan should be on, min run {int(left) // 60}:{int(left) % 60:02d} left"
-        return f"fan should be on, off at {c.off:.0f}°C"
-
-    def mode_label(self):
-        if self.choice == "auto":
-            return f"Auto: {self.auto_status()}"
-        return f"Mode: {MODE_NAMES[self.choice]}"
 
     # ---- menu -----------------------------------------------------------
     def info(self, i):
         d = self.data
         if self.error or not d:
             return ["PSU not found", self.error or "connecting...", "", ""][i]
-        msg, t = self.last_switch
+        fan = "on" if d["rpm"] > 0 else "off"
         return [
-            f"Temperature {d['temp']:.0f}°C  ·  Fan {d['rpm']:.0f} RPM  ·  "
-            f"PSU in {MODE_NAMES.get(self.applied, self.applied)}",
+            f"Temperature {d['temp']:.0f}°C  ·  Fan {d['rpm']:.0f} RPM  ·  {self.name(self.mode)}",
             f"Output {d['pout']:.0f} W  ·  Input {d['pin']:.0f} W  ·  {d['eff'] * 100:.1f}%",
             f"12V {d['v12']:.2f}V {d['i12']:.1f}A  ·  5V {d['i5']:.1f}A  ·  3.3V {d['i33']:.1f}A",
-            f"Last auto switch: {msg} ({ago(t)} ago)" if msg else "No auto switch yet",
+            f"Fan {fan} for {ago(self.fan_since)}  ·  stops outside Zero Fan: {self.fan_stops}",
         ][i]
 
-    def set_choice(self, choice):
+    def set_mode(self, mode):
         def handler(icon, item):
-            self.choice = choice
-            log(f"mode -> {choice}")
-            if choice == "auto":  # restart hysteresis from the current fan state
-                self.ctl.mode, self.ctl.since = "zero", time.monotonic()
+            # Exactly one command per click, even if the PSU is already in this mode:
+            # re-sending Silent restarts a fan that has stopped.
+            try:
+                (self.psu or PSU()).set_mode(mode)
+                log(f"sent one command: set fan mode {self.name(mode)}")
+            except Exception as e:
+                log(f"setting fan mode {self.name(mode)} failed: {e}")
         return handler
 
     def build_menu(self):
         def info_item(i):
             return pystray.MenuItem(lambda _: self.info(i), None, enabled=False)
 
-        def mode_item(key, label):
-            return pystray.MenuItem(label, self.set_choice(key), radio=True,
-                                    checked=lambda _: self.choice == key)
+        def mode_item(mode):
+            return pystray.MenuItem(MODE_NAMES[mode], self.set_mode(mode), radio=True,
+                                    checked=lambda _: self.mode == mode)
 
-        c = self.ctl
         return pystray.Menu(
             info_item(0), info_item(1), info_item(2), info_item(3),
             pystray.Menu.SEPARATOR,
-            mode_item("auto", lambda _: f"Auto: {self.auto_status()}" if self.choice == "auto"
-                      else f"Auto (on at {c.on:.0f}°C, off at {c.off:.0f}°C)"),
-            mode_item("zero", "Zero Fan (stock)"),
-            mode_item("silent", "Silent"),
-            mode_item("performance", "Performance"),
-            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Set fan mode", pystray.Menu(
+                mode_item("zero"), mode_item("silent"), mode_item("performance"))),
             pystray.MenuItem("Open log", lambda: os.startfile(LOG_FILE) if os.path.exists(LOG_FILE) else None),
             pystray.MenuItem("Start with Windows", self.toggle_startup,
                              checked=lambda _: self.startup_enabled()),
@@ -186,12 +155,12 @@ class TrayApp:
     # ---- startup registration --------------------------------------------
     def startup_cmd(self):
         pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        return f'"{pyw}" "{os.path.abspath(__file__)}" ' + " ".join(sys.argv[1:])
+        return f'"{pyw}" "{os.path.abspath(__file__)}"'
 
     def startup_enabled(self):
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-                return winreg.QueryValueEx(k, APP)[0] == self.startup_cmd().strip()
+                return winreg.QueryValueEx(k, APP)[0] == self.startup_cmd()
         except OSError:
             return False
 
@@ -200,7 +169,7 @@ class TrayApp:
             if self.startup_enabled():
                 winreg.DeleteValue(k, APP)
             else:
-                winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, self.startup_cmd().strip())
+                winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, self.startup_cmd())
 
     # ---- lifecycle --------------------------------------------------------
     def quit(self, icon, item):
@@ -213,25 +182,15 @@ class TrayApp:
         worker.start()
         self.icon.run()
         worker.join(timeout=5)
-        try:  # leave the PSU in its stock mode
-            (self.psu or PSU()).set_mode("zero")
-        except Exception:
-            pass
-        log("stopped (Zero Fan restored)")
+        log("stopped")
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--on", type=float, default=40)
-    p.add_argument("--off", type=float, default=36)
-    p.add_argument("--min-on", type=float, default=60)
-    p.add_argument("--interval", type=float, default=2)
-    args = p.parse_args()
     # single instance
     ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\DPSG-Fan-Tray")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         return
-    TrayApp(args).run()
+    TrayApp().run()
 
 
 if __name__ == "__main__":
