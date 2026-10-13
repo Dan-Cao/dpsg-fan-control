@@ -18,7 +18,7 @@ import winreg
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
-from dpsg_fan import PSU, Hysteresis
+from dpsg_fan import KEEPALIVE_S, PSU, STALL_S, Hysteresis
 
 APP = "DPSG Fan"
 LOG_DIR = os.path.join(os.environ["LOCALAPPDATA"], "DPSG-Fan")
@@ -56,6 +56,7 @@ class TrayApp:
         self.ctl = Hysteresis(args.on, args.off, args.min_on)
         self.choice = "auto"  # auto | zero | silent | performance
         self.applied = None  # PSU's fan mode as last read back (report 0x14)
+        self.sent_at = 0.0  # last time a fan-mode command was sent
         self.data, self.error = None, None
         self.last_switch = None, None  # (message, monotonic time)
         self.psu = None
@@ -83,7 +84,17 @@ class TrayApp:
                     if self.applied == want:  # it was right last poll, so something else changed it
                         log(f"PSU mode changed to {actual} by something else, setting {want}")
                     self.psu.set_mode(want)
+                    self.sent_at = time.monotonic()
                     actual = self.psu.get_mode()
+                elif want != "zero":
+                    since_sent = time.monotonic() - self.sent_at
+                    # the fan normally spins up within ~8 s of a command
+                    stalled = d["rpm"] == 0 and since_sent > STALL_S
+                    if stalled:
+                        log(f"fan still stopped {since_sent:.0f}s after setting {want}, re-sending")
+                    if stalled or since_sent > KEEPALIVE_S:
+                        self.psu.set_mode(want)  # keep-alive, see KEEPALIVE_S
+                        self.sent_at = time.monotonic()
                 self.applied = actual
             except Exception as e:  # PSU unplugged, asleep, etc.
                 if self.error is None:

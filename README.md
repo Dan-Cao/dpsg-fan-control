@@ -11,7 +11,7 @@ Zero Fan  --(temp >= 40 °C, or the fan starts)-->  Silent
 Silent    --(temp <= 36 °C and on for >= 1 min)-->  Zero Fan
 ```
 
-The firmware still sets the fan speed within each mode, so the worst case is the stock behaviour.
+Each fan-mode command makes the firmware run the fan continuously, but occasionally a switch into Silent doesn't take and the fan cycles at 40/39 °C as in Zero Fan. So while the fan should be on, the app re-sends Silent every 30 s, and straight away (with a log line) if the fan hasn't started 15 s after a command. The firmware still sets the fan speed, so the worst case is the stock behaviour.
 
 ## Setup
 
@@ -127,7 +127,8 @@ The PSU's HID report descriptor also declares output reports `0x15`–`0x18` (24
 ### Measured behaviour (1200W, ~100 W load)
 
 - **Zero Fan:** fan off below 40 °C. At 40 °C it spins at roughly 570–740 RPM, then stops at 39 °C, repeating every few seconds.
-- **Silent:** a constant ~928 RPM at this load. Temperature fell from 39 °C to 35 °C in about 90 seconds.
+- **Silent, after a fan-mode command:** the fan spins up within about 8 s and holds a steady ~928 RPM. This happens even if the command repeats the current mode. One command kept it running for 15+ minutes at 30–32 °C. Temperature fell from 40 °C to 36 °C in under a minute.
+- **Silent, when a switch doesn't take:** about one switch in six during one evening's use. The PSU reports Silent, but the fan cycles at 40/39 °C like Zero Fan: about 10 s on, 10–20 s off. Re-sending the command fixed it. The cause is unknown; it isn't a timeout, and it isn't caused by reading report `0x14`.
 
 ## Files
 

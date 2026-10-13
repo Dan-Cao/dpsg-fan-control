@@ -26,6 +26,13 @@ import hid
 VID, PID = 0x264A, 0x232A
 MODES = {"performance": 0xFE, "silent": 0xFD, "zero": 0xFB}  # output 0x13, read back via input 0x14
 MODE_NAMES = {v: k for k, v in MODES.items()}
+# A fan-mode command (even repeating the current mode) normally makes the firmware run the
+# fan continuously (15 min+ measured). Occasionally a switch into Silent doesn't take and
+# the fan cycles at 40/39 C as in Zero Fan; re-sending fixes it. So while the fan should be
+# on, re-send every KEEPALIVE_S, and straight away if it hasn't started STALL_S after a
+# command (spin-up normally takes ~8 s).
+KEEPALIVE_S = 30
+STALL_S = 15
 FIELDS = ["vin", "iin", "pin", "pf", "v12", "i12", "v5", "i5", "v33", "i33",
           "pout", "eff", "temp2", "temp", "rpm"]  # input report 0x10, PMBus LINEAR11 words
 
@@ -103,6 +110,7 @@ def run(args):
     psu = PSU()
     ctl = Hysteresis(args.on, args.off, args.min_on)
     psu.set_mode(ctl.mode)
+    sent_at = time.monotonic()
     log(f"started: on>={args.on}C off<={args.off}C min_on={args.min_on}s")
     try:
         while True:
@@ -122,6 +130,15 @@ def run(args):
                 if not msg:
                     log(f"PSU mode changed to {actual} by something else, setting {ctl.mode}")
                 psu.set_mode(ctl.mode)
+                sent_at = time.monotonic()
+            elif ctl.mode != "zero":
+                since_sent = time.monotonic() - sent_at
+                stalled = d["rpm"] == 0 and since_sent > STALL_S
+                if stalled:
+                    log(f"fan still stopped {since_sent:.0f}s after setting {ctl.mode}, re-sending")
+                if stalled or since_sent > KEEPALIVE_S:
+                    psu.set_mode(ctl.mode)  # keep-alive, see KEEPALIVE_S
+                    sent_at = time.monotonic()
             time.sleep(args.interval)
     finally:
         try:
