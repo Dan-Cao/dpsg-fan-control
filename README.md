@@ -8,7 +8,7 @@ This app adds hysteresis by switching between the PSU's own fan modes:
 
 ```
 Zero Fan  --(temp >= 40 °C, or the fan starts)-->  Silent
-Silent    --(temp <= 34 °C and on for >= 3 min)-->  Zero Fan
+Silent    --(temp <= 36 °C and on for >= 1 min)-->  Zero Fan
 ```
 
 The firmware still sets the fan speed within each mode, so the worst case is the stock behaviour.
@@ -22,14 +22,14 @@ Double-click **`Start DPSG Fan.cmd`**. The first run creates a `.venv` here and 
 To change the thresholds, pass options to the launcher or the script:
 
 ```
-"Start DPSG Fan.cmd" --on 40 --off 33 --min-on 300
+"Start DPSG Fan.cmd" --on 40 --off 37 --min-on 45
 ```
 
 | Option       | Default | Meaning                                      |
 |--------------|---------|----------------------------------------------|
 | `--on`       | 40      | Switch the fan on at this temperature (°C)    |
-| `--off`      | 34      | Allow it off again at this temperature (°C)   |
-| `--min-on`   | 180     | Minimum seconds the fan stays on              |
+| `--off`      | 36      | Allow it off again at this temperature (°C)   |
+| `--min-on`   | 60      | Minimum seconds the fan stays on              |
 | `--interval` | 2       | Seconds between readings                      |
 
 ## Using the tray icon

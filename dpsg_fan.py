@@ -77,7 +77,7 @@ class Hysteresis:
 
     SPIN_DOWN_S = 30  # after switching to Zero Fan, the fan is still coasting for a while
 
-    def __init__(self, on=40, off=34, min_on=180):
+    def __init__(self, on=40, off=36, min_on=60):
         self.on, self.off, self.min_on = on, off, min_on
         self.mode, self.since = "zero", time.monotonic()
 
@@ -124,8 +124,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("cmd", nargs="?", default="run", choices=["run", "status", *MODES])
     p.add_argument("--on", type=float, default=40)
-    p.add_argument("--off", type=float, default=34)
-    p.add_argument("--min-on", type=float, default=180)
+    p.add_argument("--off", type=float, default=36)
+    p.add_argument("--min-on", type=float, default=60)
     p.add_argument("--interval", type=float, default=2)
     args = p.parse_args()
     if args.cmd == "run":

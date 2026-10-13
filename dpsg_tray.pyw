@@ -5,7 +5,7 @@ The icon shows the PSU temperature; its colour shows the fan state:
 Hover for a summary, right-click for details, fan mode and options.
 
   pip install hidapi pystray pillow
-  pythonw dpsg_tray.pyw [--on 40] [--off 34] [--min-on 180]
+  pythonw dpsg_tray.pyw [--on 40] [--off 36] [--min-on 60]
 """
 import argparse
 import ctypes
@@ -209,8 +209,8 @@ class TrayApp:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--on", type=float, default=40)
-    p.add_argument("--off", type=float, default=34)
-    p.add_argument("--min-on", type=float, default=180)
+    p.add_argument("--off", type=float, default=36)
+    p.add_argument("--min-on", type=float, default=60)
     p.add_argument("--interval", type=float, default=2)
     args = p.parse_args()
     # single instance
