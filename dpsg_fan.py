@@ -24,7 +24,8 @@ import time
 import hid
 
 VID, PID = 0x264A, 0x232A
-MODES = {"performance": 0xFE, "silent": 0xFD, "zero": 0xFB}  # output report 0x13
+MODES = {"performance": 0xFE, "silent": 0xFD, "zero": 0xFB}  # output 0x13, read back via input 0x14
+MODE_NAMES = {v: k for k, v in MODES.items()}
 FIELDS = ["vin", "iin", "pin", "pf", "v12", "i12", "v5", "i5", "v33", "i33",
           "pout", "eff", "temp2", "temp", "rpm"]  # input report 0x10, PMBus LINEAR11 words
 
@@ -53,6 +54,11 @@ class PSU:
     def read(self):
         r = self.dev.get_input_report(0x10, 31)
         return {n: linear11(r[1 + 2 * i] | r[2 + 2 * i] << 8) for i, n in enumerate(FIELDS)}
+
+    def get_mode(self):
+        """Current fan mode from input report 0x14; unknown bytes come back as e.g. '0xF7'."""
+        b = self.dev.get_input_report(0x14, 2)[1]
+        return MODE_NAMES.get(b, f"0x{b:02X}")
 
     def set_mode(self, mode):
         # Same call the official app makes: HidD_SetOutputReport([0x13, mode])
@@ -110,8 +116,12 @@ def run(args):
                 continue
             msg = ctl.step(d)
             if msg:
-                psu.set_mode(ctl.mode)
                 log(msg)
+            actual = psu.get_mode()
+            if actual != ctl.mode:
+                if not msg:
+                    log(f"PSU mode changed to {actual} by something else, setting {ctl.mode}")
+                psu.set_mode(ctl.mode)
             time.sleep(args.interval)
     finally:
         try:
@@ -137,7 +147,8 @@ def main():
         print(f"temp {d['temp']:.0f}C (secondary {d['temp2']:.0f}C)  fan {d['rpm']:.0f} RPM  "
               f"in {d['pin']:.0f}W @ {d['vin']:.0f}V  out {d['pout']:.0f}W  eff {d['eff'] * 100:.1f}%\n"
               f"12V {d['v12']:.2f}V {d['i12']:.2f}A  5V {d['v5']:.2f}V {d['i5']:.2f}A  "
-              f"3.3V {d['v33']:.2f}V {d['i33']:.2f}A")
+              f"3.3V {d['v33']:.2f}V {d['i33']:.2f}A\n"
+              f"fan mode {psu.get_mode()}")
     else:
         psu.set_mode(args.cmd)
         print("mode set:", args.cmd)

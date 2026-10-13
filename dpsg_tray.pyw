@@ -55,8 +55,7 @@ class TrayApp:
         self.interval = args.interval
         self.ctl = Hysteresis(args.on, args.off, args.min_on)
         self.choice = "auto"  # auto | zero | silent | performance
-        self.applied = None  # mode last sent to the PSU
-        self.sent_at = 0.0
+        self.applied = None  # PSU's fan mode as last read back (report 0x14)
         self.data, self.error = None, None
         self.last_switch = None, None  # (message, monotonic time)
         self.psu = None
@@ -79,10 +78,13 @@ class TrayApp:
                     want = self.ctl.mode
                 else:
                     want = self.choice
-                # re-send periodically in case the Thermaltake app changed the mode
-                if want != self.applied or time.monotonic() - self.sent_at > 60:
+                actual = self.psu.get_mode()
+                if actual != want:
+                    if self.applied == want:  # it was right last poll, so something else changed it
+                        log(f"PSU mode changed to {actual} by something else, setting {want}")
                     self.psu.set_mode(want)
-                    self.applied, self.sent_at = want, time.monotonic()
+                    actual = self.psu.get_mode()
+                self.applied = actual
             except Exception as e:  # PSU unplugged, asleep, etc.
                 if self.error is None:
                     log(f"error: {e}")
@@ -131,7 +133,8 @@ class TrayApp:
             return ["PSU not found", self.error or "connecting...", "", ""][i]
         msg, t = self.last_switch
         return [
-            f"Temperature {d['temp']:.0f}°C  ·  Fan {d['rpm']:.0f} RPM",
+            f"Temperature {d['temp']:.0f}°C  ·  Fan {d['rpm']:.0f} RPM  ·  "
+            f"PSU in {MODE_NAMES.get(self.applied, self.applied)}",
             f"Output {d['pout']:.0f} W  ·  Input {d['pin']:.0f} W  ·  {d['eff'] * 100:.1f}%",
             f"12V {d['v12']:.2f}V {d['i12']:.1f}A  ·  5V {d['i5']:.1f}A  ·  3.3V {d['i33']:.1f}A",
             f"Last auto switch: {msg} ({ago(t)} ago)" if msg else "No auto switch yet",

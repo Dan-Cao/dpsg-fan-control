@@ -53,7 +53,7 @@ Right-click for:
 - **Start with Windows**: adds a `DPSG Fan` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that starts the `.venv` copy at sign-in. Turn it on again if you move this folder or change options.
 - **Quit**: puts the PSU back in Zero Fan mode
 
-The Thermaltake DPS G app can stay open for its stats. If it changes the fan mode, this app sets its own mode again within a minute. Avoid changing the fan mode in both apps.
+The Thermaltake DPS G app can stay open for its stats. This app reads back the PSU's fan mode every poll, so if the Thermaltake app changes it, this app sets its own mode again within a couple of seconds and logs it. Avoid changing the fan mode in both apps.
 
 ## Command line
 
@@ -106,6 +106,10 @@ LINEAR11: the top 5 bits are a signed exponent and the low 11 bits are a signed 
 
 **Input report `0x12`, 33 bytes:** serial number (ASCII).
 
+**Input report `0x14`, 2 bytes: current fan mode.** The second byte is the same value as the fan-mode command below (`FE`, `FD` or `FB`). It updates within 0.3 s of a mode change.
+
+**Input report `0x1D`, 33 bytes:** firmware build date (ASCII), e.g. `Dec 10 2015 14:26:14`.
+
 **Output report `0x13`, 2 bytes: fan mode.**
 
 | Bytes   | Mode        |
@@ -115,6 +119,8 @@ LINEAR11: the top 5 bits are a signed exponent and the low 11 bits are a signed 
 | `13 FB` | Zero Fan    |
 
 Other values of the second byte have not been tried.
+
+The PSU's HID report descriptor also declares output reports `0x15`–`0x18` (24 bytes), `0x19` (3 bytes) and `0x1A` (32 bytes). The Thermaltake app never sends them and their purpose is unknown. They could be calibration or firmware-update commands, so don't send them blind.
 
 **Output report `0x1E`, 16 bytes:** LED control (`1E 00 R G B` sets a colour, `1E 01 <0|1>` turns the LEDs on or off). Not used here.
 
