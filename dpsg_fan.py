@@ -75,13 +75,17 @@ def log(msg):
 class Hysteresis:
     """Decides between Zero Fan and Silent; step() returns a log message when it switches."""
 
+    SPIN_DOWN_S = 30  # after switching to Zero Fan, the fan is still coasting for a while
+
     def __init__(self, on=40, off=34, min_on=180):
         self.on, self.off, self.min_on = on, off, min_on
         self.mode, self.since = "zero", time.monotonic()
 
     def step(self, d):
         t, on_for = d["temp"], time.monotonic() - self.since
-        if self.mode == "zero" and (t >= self.on or d["rpm"] > 0):
+        # rpm > 0 in Zero Fan means the firmware started the fan, unless it is still spinning down
+        fw_started = d["rpm"] > 0 and on_for >= self.SPIN_DOWN_S
+        if self.mode == "zero" and (t >= self.on or fw_started):
             self.mode, self.since = "silent", time.monotonic()
             return f"fan ON  temp={t:.0f}C pout={d['pout']:.0f}W"
         if self.mode == "silent" and t <= self.off and on_for >= self.min_on:
